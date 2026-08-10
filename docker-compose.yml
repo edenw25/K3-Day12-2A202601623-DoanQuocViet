@@ -37,8 +37,11 @@ services:
   # TODO (CP2): khai báo service `agent` ở đây
   agent:
     build: .
+    # Không map cứng "8000:8000": khi `--scale agent=3` cả 3 container sẽ
+    # tranh nhau cùng một cổng host. Để Docker tự cấp cổng ngẫu nhiên, còn
+    # cổng 8000 do nginx giữ và chia tải xuống các instance.
     ports:
-      - "8000:8000"
+      - "8000"
     environment:
       - AGENT_API_KEY=${AGENT_API_KEY}
       - REDIS_URL=redis://redis:6379/0
@@ -52,6 +55,21 @@ services:
       timeout: 3s
       retries: 5
       start_period: 10s
+
+  # ĐIỂM CỘNG (CP4): load balancer đứng trước các instance agent.
+  # Docker DNS trả về IP của cả 3 container cho hostname `agent`, nginx gửi
+  # request luân phiên (round-robin) — nên hai lượt hỏi liên tiếp của cùng
+  # một user có thể rơi vào hai container khác nhau. Đó là lý do lịch sử hội
+  # thoại phải nằm ở Redis chứ không nằm trong RAM của từng process.
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "8000:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      agent:
+        condition: service_healthy
 
 
 volumes:
