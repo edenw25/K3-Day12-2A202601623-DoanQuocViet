@@ -35,9 +35,24 @@ services:
       retries: 5
 
   # TODO (CP2): khai báo service `agent` ở đây
-  # agent:
-  #   build: .
-  #   ...
+  agent:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - AGENT_API_KEY=${AGENT_API_KEY}
+      - REDIS_URL=redis://redis:6379/0
+      - PORT=${PORT:-8000}
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, urllib.request; urllib.request.urlopen('http://localhost:' + os.getenv('PORT', '8000') + '/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
 
 volumes:
   redis-data:
