@@ -1,8 +1,5 @@
 # Thông Tin Deploy — Checkpoint 5
 
-> Điền file này sau khi deploy xong. `pytest tests/test_cp5.py` đọc file này
-> để tìm địa chỉ service của bạn và gọi thử.
->
 > **Chỉ ghi TÊN biến môi trường, tuyệt đối không dán giá trị API key vào đây.**
 > Repo này công khai — dán khóa vào là mất khóa.
 
@@ -10,17 +7,18 @@
 
 | Mục | Nội dung |
 |-----|----------|
-| Họ và tên | (điền họ tên) |
-| Mã học viên | (điền mã học viên) |
-| Repo | (điền link repo DAY12-...) |
+| Họ và tên | Đoàn Quốc Việt |
+| Mã học viên | 2A202601623 |
+| Repo | https://github.com/edenw25/K3-Day12-2A202601623-DoanQuocViet |
 
 ## Service
 
 | Mục | Nội dung |
 |-----|----------|
-| Public URL | https://TODO-thay-bang-url-that.up.railway.app |
-| Platform | Railway / Render / Cloud Run — (điền platform bạn dùng) |
-| Ngày deploy | (điền ngày) |
+| Public URL | https://k3-day12-2a202601623-doanquocviet-production.up.railway.app |
+| Platform | Railway |
+| Region | US West (edge Singapore — sin1) |
+| Ngày deploy | 10/08/2026 |
 
 ## Biến Môi Trường Đã Set Trên Cloud
 
@@ -28,74 +26,118 @@ Ghi tên biến và **nguồn giá trị**, không ghi giá trị:
 
 | Biến | Đã set | Ghi chú |
 |------|--------|---------|
-| `PORT` | ✅ | platform tự gán |
-| `AGENT_API_KEY` | ✅ | đặt trong dashboard, không nằm trong repo |
-| `REDIS_URL` | ✅ | (điền: Redis add-on của platform / Upstash / ...) |
+| `PORT` | ✅ | ghim 8000 cho khớp target port của domain và `EXPOSE 8000` |
+| `AGENT_API_KEY` | ✅ | sinh bằng `secrets.token_urlsafe(32)`, đặt trong dashboard Railway, không nằm trong repo |
+| `REDIS_URL` | ✅ | tham chiếu service Redis của Railway bằng `${{Redis.REDIS_URL}}` |
 | `RATE_LIMIT_PER_MINUTE` | ✅ | 10 |
 | `MONTHLY_BUDGET_USD` | ✅ | 10.0 |
 | `LOG_LEVEL` | ✅ | INFO |
 
 ## Lệnh Kiểm Tra
 
-Thay `<URL>` bằng Public URL ở trên:
-
 ```bash
+URL=https://k3-day12-2a202601623-doanquocviet-production.up.railway.app
+
 # 1. Liveness — mong đợi 200 {"status":"ok"}
-curl -i <URL>/health
+curl -i $URL/health
 
 # 2. Readiness — mong đợi 200 {"status":"ready"} (đã nối được Redis)
-curl -i <URL>/ready
+curl -i $URL/ready
 
 # 3. Không có API key — mong đợi 401
-curl -i -X POST <URL>/ask \
+curl -i -X POST $URL/ask \
   -H "Content-Type: application/json" \
   -d '{"question":"Hello"}'
 
 # 4. Có API key — mong đợi 200 kèm câu trả lời
-curl -i -X POST <URL>/ask \
+curl -i -X POST $URL/ask \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: $AGENT_API_KEY" \
+  -H "X-API-Key: $DEPLOY_API_KEY" \
   -H "X-User-Id: sv-test" \
   -d '{"question":"Deploy là gì?"}'
 
-# 5. Rate limit — gọi 15 lần, những lần cuối phải trả 429
-for i in $(seq 1 15); do
-  curl -s -o /dev/null -w "%{http_code} " -X POST <URL>/ask \
+# 5. Rate limit — gọi 13 lần, những lần cuối phải trả 429
+for i in $(seq 1 13); do
+  curl -s -o /dev/null -w "%{http_code} " -X POST $URL/ask \
     -H "Content-Type: application/json" \
-    -H "X-API-Key: $AGENT_API_KEY" \
-    -H "X-User-Id: sv-test" \
+    -H "X-API-Key: $DEPLOY_API_KEY" \
+    -H "X-User-Id: sv-rate" \
     -d '{"question":"test"}'
 done; echo
 ```
 
 ## Kết Quả Chạy Thật
 
-Dán output của các lệnh trên vào đây:
+Chạy lúc 2026-08-10, gọi từ máy cá nhân qua Internet:
 
 ```
-(điền output)
+# 1. /health
+HTTP/1.1 200 OK
+Content-Type: application/json
+Server: railway-hikari
+x-railway-edge: sin1
+
+{"status":"ok","service":"day12-agent","version":"1.0.0"}
+
+# 2. /ready
+{"status":"ready","redis":true}        [HTTP 200]
+
+# 3. /ask không có API key
+{"detail":"invalid or missing API key"}   [HTTP 401]
+
+# 4. /ask có API key — lượt hỏi thứ nhất
+{"answer":"Ngắn gọn: Deploy la gi phụ thuộc vào ba yếu tố — cấu hình qua biến
+môi trường, health check để orchestrator biết trạng thái, và giới hạn tài
+nguyên.","user_id":"sv-test","history_length":0,"cost_usd":2.265e-05,
+"tokens":{"in":3,"out":37}}
+
+# 4b. /ask lượt thứ hai, cùng X-User-Id — lịch sử đọc lại từ Redis trên cloud
+history_length : 2
+cost_usd       : 3.57e-05
+tokens         : in=46 out=48
+
+# 5. Rate limit, 13 lần liên tiếp cùng một X-User-Id
+200 200 200 200 200 200 200 200 200 200 429 429 429
 ```
+
+Ba điểm đáng chú ý trong kết quả trên:
+
+- `/ready` trả `redis: true` nghĩa là `store.ping()` gọi được tới Redis add-on
+  của Railway qua biến tham chiếu, không phải Redis chạy trong cùng container.
+- `history_length` tăng từ 0 lên 2 giữa hai request độc lập — state nằm ở
+  Redis nên sống sót qua từng request, đúng yêu cầu stateless của CP4.
+- Rate limit cắt đúng sau request thứ 10, khớp `RATE_LIMIT_PER_MINUTE=10`.
 
 ## Ảnh Chụp Màn Hình
 
 Đặt ảnh trong thư mục `screenshots/`:
 
-- `screenshots/dashboard.png` — trang quản lý service trên platform
-- `screenshots/health.png` — kết quả gọi `/health` từ trình duyệt hoặc curl
+- `screenshots/dashboard.png` — trang Deployments trên Railway, deployment ở
+  trạng thái ACTIVE với đủ 5 mốc Initialization / Build / Deploy / Network /
+  Post-deploy
+- `screenshots/health.png` — kết quả gọi `/health` từ trình duyệt
 
----
+## Sự Cố Gặp Phải Khi Deploy
 
-## Nếu Dùng Phương Án Dự Phòng
+Ghi lại để đối chiếu với câu 10 trong `exercises.md`. Bốn nấc, mỗi nấc một
+tầng khác nhau của hệ thống:
 
-Không đăng ký được tài khoản cloud? Vẫn nộp được bài, nhưng CP5 tối đa 60% điểm:
+1. **Healthcheck failure sau 30 giây.** Deploy Logs:
+   `Error: Invalid value for '--port': '$PORT' is not a valid integer`.
+   `startCommand` trong `railway.toml` được Railway chạy dạng exec, không qua
+   shell, nên `$PORT` không giãn. Sửa: xoá `startCommand` để Railway dùng
+   `CMD` trong Dockerfile — dòng đó đã bọc `sh -c` và có mặc định
+   `${PORT:-8000}`.
+2. **404 `Application not found`** kèm header `x-railway-fallback: true`.
+   Router của Railway không tìm thấy container nào để chuyển tiếp: các biến
+   môi trường vừa thêm còn ở trạng thái staged, chưa bấm nút Deploy.
+3. **502 `Application failed to respond`.** Đã có container nhưng lệch cổng.
+4. Deploy Logs cho thấy `Uvicorn running on http://0.0.0.0:8080` trong khi
+   domain trỏ vào cổng 8000. Railway cấp `PORT=8080`, app đọc đúng biến đó,
+   nhưng target port của domain đã bị ghim tay là 8000. Sửa: đặt tường minh
+   `PORT=8000` để cả ba chỗ (biến môi trường, target port, `EXPOSE`) cùng
+   một số.
 
-1. Đặt `LOCAL_FALLBACK=true` trong `.env`
-2. Chạy `docker compose up -d` rồi kiểm tra `docker compose ps`
-3. Chụp màn hình vào `screenshots/`
-4. Chạy `pytest tests/test_cp5.py -v` — bộ test sẽ tự chuyển sang kiểm tra
-   `http://localhost:8000`
-5. Ghi rõ lý do không deploy được vào phần dưới đây:
-
-```
-(điền lý do nếu dùng phương án dự phòng, ngược lại xóa mục này)
-```
+Bài học chung: mã lỗi HTTP và header cho biết request chết ở tầng nào — 404
+kèm `x-railway-fallback` là chết ở router, 502 là chết giữa router và
+container, còn traceback trong Deploy Logs là chết bên trong app.

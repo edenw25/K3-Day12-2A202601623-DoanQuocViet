@@ -399,67 +399,104 @@ Ghi lại **một** lỗi bạn gặp khi deploy lên cloud (build fail, health 
 timeout, sai REDIS_URL, app không đọc `$PORT`...): thông báo lỗi là gì, bạn
 tìm ra nguyên nhân bằng cách nào, và sửa ra sao?
 
-> *(Ghi chú trung thực: tại thời điểm viết câu này tôi mới đưa service lên
-> container và chạy bằng docker compose, chưa deploy lên cloud. Lỗi dưới đây
-> là lỗi thật tôi gặp trong bước đó, thuộc đúng nhóm "app không đọc `$PORT`"
-> mà đề bài liệt kê. Tôi sẽ cập nhật lại bằng lỗi trên platform sau khi hoàn
-> tất CP5.)*
+> Tôi deploy lên **Railway** và mất bốn lần thử mới xanh. Kể lại cả bốn vì mỗi
+> lần lỗi ở một tầng khác nhau, và chính điều đó dạy tôi cách khoanh vùng.
 >
-> **Thông báo lỗi.** Sau `docker compose up -d`, container `agent` không bao
-> giờ chuyển sang `healthy`, và `curl localhost:8000/health` trả
-> "Unable to connect to the remote server". `docker compose ps` cho thấy
-> container đã `Exited`.
+> ---
 >
-> **Cách tìm ra nguyên nhân.** Container chết quá nhanh nên không có gì để
-> quan sát từ bên ngoài — tôi phải đọc log của chính nó:
+> **Nấc 1 — `Healthcheck failure` sau 30 giây.**
 >
-> ```bash
-> docker compose logs agent --tail 20
-> ```
->
-> Log chỉ thẳng vào dòng gây lỗi:
+> Dashboard báo Build ✓, Deploy ✓, nhưng `Network › Healthcheck` ✗. Nhìn từ
+> ngoài thì giống hệt "app chậm", nhưng Deploy Logs nói khác:
 >
 > ```
-> File "/app/app/lifecycle.py", line 59, in install
->     raise NotImplementedError("TODO (CP4): cài đặt install")
-> ERROR:    Application startup failed. Exiting.
+> Usage: uvicorn [OPTIONS] APP
+> Error: Invalid value for '--port': '$PORT' is not a valid integer.
 > ```
 >
-> Nguyên nhân: `lifespan` gọi `lifecycle.install()` ngay lúc khởi động, mà hàm
-> đó tôi chưa cài đặt, nên uvicorn chết trước khi kịp mở cổng. Điều này cũng
-> giải thích vì sao lỗi trông giống lỗi mạng từ bên ngoài: không có gì lắng
-> nghe ở cổng 8000 cả.
+> Chuỗi `'$PORT'` xuất hiện **nguyên văn, có cả dấu `$`** — nghĩa là biến
+> không rỗng mà là *không được giãn*. Nguyên nhân nằm ở `railway.toml`:
 >
-> **Bài học quan trọng hơn nằm ở một lỗi kề bên.** Khi build, Docker cảnh báo:
->
-> ```
-> JSONArgsRecommended: JSON arguments recommended for CMD to prevent
-> unintended behavior related to OS signals
+> ```toml
+> startCommand = "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
 > ```
 >
-> Ban đầu tôi viết `CMD ["uvicorn", ..., "--port", "${PORT:-8000}"]`. Dạng
-> exec form là một mảng JSON, **không đi qua shell**, nên `${PORT:-8000}`
-> không được giãn — uvicorn nhận đúng 13 ký tự `${PORT:-8000}` làm số cổng và
-> crash. Đây chính xác là lỗi "app không đọc `$PORT`" mà đề bài nhắc tới, và
-> trên cloud nó còn khó chẩn đoán hơn vì Railway/Render gán `PORT` ngẫu
-> nhiên: app hoặc chết, hoặc nghe nhầm cổng rồi health check timeout, và
-> platform chỉ báo chung chung là deploy failed.
+> Railway chạy `startCommand` dạng exec, không qua shell, nên `$PORT` được
+> truyền tới uvicorn như một chuỗi 5 ký tự. Tệ hơn, `startCommand` **ghi đè**
+> `CMD` trong Dockerfile, nên bản `sh -c ... ${PORT:-8000}` mà tôi đã viết
+> đúng ở CP2 hoàn toàn bị vô hiệu. Đây đúng là cái bẫy tôi từng gặp ở CP2,
+> chỉ chuyển chỗ xảy ra.
 >
-> **Cách sửa.** Chuyển sang
-> `CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]`.
-> Ba chi tiết trong một dòng:
+> **Sửa:** xoá hẳn dòng `startCommand` để Railway dùng `CMD` trong Dockerfile.
 >
-> - `sh -c` đưa lệnh qua shell nên `${PORT:-8000}` mới được giãn thành số;
-> - `${PORT:-8000}` cho giá trị mặc định khi chạy local, còn trên cloud thì
->   biến `PORT` của platform ghi đè;
-> - `exec` làm uvicorn **thay thế** tiến trình shell chứ không chạy làm con
->   của nó. Thiếu từ khoá này, PID 1 là `sh`, và SIGTERM khi deploy bản mới sẽ
->   đến `sh` chứ không đến uvicorn — toàn bộ phần graceful shutdown tôi viết ở
->   CP4 sẽ không bao giờ chạy, request đang xử lý dở bị cắt giữa chừng.
+> ---
 >
-> Sau khi sửa cả hai, `docker compose ps` báo `healthy` và `/health` trả
-> `{"status":"ok","service":"day12-agent","version":"1.0.0"}`.
+> **Nấc 2 — `404 Application not found`.**
 >
-> Điều tôi rút ra: khi container "không kết nối được", phản xạ đầu tiên nên là
-> đọc log của container chứ không phải nghi ngờ cổng hay mạng — vì phần lớn
-> trường hợp app đã chết từ lúc khởi động, và log luôn nói rõ vì sao.
+> Gọi vào domain thì nhận 404, nhưng header mới là chỗ đáng đọc:
+>
+> ```
+> Server: railway-hikari
+> x-railway-fallback: true
+> {"status":"error","code":404,"message":"Application not found"}
+> ```
+>
+> Không có header `server: uvicorn` — nghĩa là request chưa từng chạm tới app
+> của tôi, nó chết ngay ở router biên của Railway. Router không tìm thấy
+> container nào để chuyển tiếp.
+>
+> Nguyên nhân hoá ra rất tầm thường: Railway không áp dụng ngay khi tôi thêm
+> biến môi trường, nó gom lại thành *staged changes* và chờ bấm nút **Deploy**.
+> Tôi thêm 5 biến rồi đi làm việc khác, nên không có deployment nào sống cả.
+>
+> ---
+>
+> **Nấc 3 và 4 — `502 Application failed to respond`, do lệch cổng.**
+>
+> Sau khi bấm Deploy, mã lỗi đổi từ 404 sang 502. Bản thân sự thay đổi này đã
+> là thông tin: router giờ **đã tìm thấy** container, nhưng gõ cửa mà không ai
+> trả lời. Deploy Logs cho thấy app hoàn toàn khoẻ mạnh:
+>
+> ```
+> INFO:     Application startup complete.
+> INFO:     Uvicorn running on http://0.0.0.0:8080
+> ```
+>
+> Uvicorn nghe **8080**, trong khi lúc Generate Domain tôi đã gõ tay target
+> port là **8000**. Railway cấp `PORT=8080`, app đọc đúng biến đó và bind
+> 8080 — tức là phần `${PORT:-8000}` hoạt động chính xác — nhưng router lại
+> đẩy traffic vào 8000.
+>
+> **Sửa:** đặt tường minh biến `PORT=8000` trên dashboard, để cả ba chỗ cùng
+> một con số: biến môi trường, target port của domain, và `EXPOSE 8000` trong
+> Dockerfile.
+>
+> ---
+>
+> **Kết quả sau khi sửa:**
+>
+> ```
+> /health         → 200 {"status":"ok","service":"day12-agent","version":"1.0.0"}
+> /ready          → 200 {"status":"ready","redis":true}
+> /ask không key  → 401 {"detail":"invalid or missing API key"}
+> /ask có key     → 200, history_length 0 → 2 giữa hai request
+> 13 lần liên tiếp → 200 ×10 rồi 429 429 429
+> ```
+>
+> ---
+>
+> **Điều tôi rút ra.** Mã lỗi HTTP và header cho biết request chết ở **tầng
+> nào**, và đó là thứ quyết định nên đi đọc log ở đâu:
+>
+> | Triệu chứng | Chết ở tầng | Đọc gì |
+> |---|---|---|
+> | 404 + `x-railway-fallback: true` | router biên | trạng thái deployment |
+> | 502 `failed to respond` | giữa router và container | cổng app đang nghe |
+> | `server: uvicorn` + lỗi 4xx/5xx | bên trong app | Deploy Logs, traceback |
+>
+> Ba lần đầu tôi đều suýt sửa mò. Lần nào đọc log trước cũng tìm ra nguyên
+> nhân trong chưa tới một phút, còn đoán thì tốn cả chục phút và một lần
+> deploy vô ích. Đây cũng là lý do `log_event` ở CP1 đáng giá: dòng
+> `{"event": "service_started", ...}` xuất hiện trong Deploy Logs chính là
+> ranh giới rõ ràng giữa "app chưa khởi động nổi" và "app sống, lỗi nằm ở
+> tầng mạng".
