@@ -4,14 +4,20 @@
 #     railway variables --set AGENT_API_KEY=...
 #
 # Railway tự gán biến PORT — app phải đọc $PORT, đừng cố định 8000.
+#
+# KHÔNG khai báo `startCommand` ở đây: Railway chạy lệnh đó dạng exec (không
+# qua shell) nên `$PORT` không được giãn — uvicorn nhận đúng chuỗi 5 ký tự
+# "$PORT" và chết với "Invalid value for '--port'". Bỏ trống mục này để
+# Railway dùng CMD trong Dockerfile, vốn đã bọc `sh -c` để giãn được biến,
+# có mặc định `${PORT:-8000}`, và có `exec` để uvicorn thành PID 1 (nhận
+# được SIGTERM → graceful shutdown ở CP4 mới hoạt động).
 
 [build]
 builder = "dockerfile"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
 healthcheckPath = "/health"
-healthcheckTimeout = 30
+healthcheckTimeout = 100
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3
